@@ -1,0 +1,157 @@
+# Projeto com Feedback do curso Big Data com R e Azure realizado pelo Data
+# Science Academy.
+#
+# O objetivo do projeto é desenvolver um modelo para prever com precisão a demanda
+# de estoque com base nos dados históricos de ven das. Isso fará com que os consumidores
+# dos mais de 100 produtos de panificação não fiquem olhando para as prateleiras vazias, além de
+# reduzir o valor gasto com reembolsos para os proprietários de lojas com produtos
+# excedentes impróprios para venda.
+
+# Fonte dos dados:
+# https://www.kaggle.com/c/grupo-bimbo-inventory-demand
+
+# Ao testar o projeto, favor modificar o diretório da pasta abaixo
+# para onde os arquivos do projeto estão localizados em sua máquina
+setwd("~/FCD/BigDataRAzure/Projetos/Projeto2")
+getwd()
+
+# Etapa 1: Carregando os dados
+
+# Carregando os pacotes necessários para o projeto
+library(tidyr)
+library(ggplot2)
+library(dplyr)
+library(data.table)
+library(scales)
+
+# Carregando os dados das tabelas
+
+cliente <- fread("cliente_tabla.csv")
+produto <- fread("producto_tabla.csv")
+local <- fread("town_state.csv")
+
+dados <- fread("train.csv")
+
+# Etapa 2: Manipulando os Dados
+
+# Coletando uma amostra menor do dataset dados
+
+sample1 <- sample(1:nrow(dados), 16333333)
+dados <- dados[sample1,]
+
+# Eliminando dados repetidos em cliente
+
+cliente <- cliente[!duplicated(cliente$Cliente_ID),]
+
+# Modificando o enconding para UTF-8 e capitalizando a coluna State
+
+Encoding(local$State) <- "UTF-8"
+local$State <- toupper(local$State)
+
+# Realizando JOINs entre as tabelas
+
+dados <- merge(dados, cliente, by = "Cliente_ID")
+dados <- merge(dados, produto, by = "Producto_ID")
+dados <- merge(dados, local, by = "Agencia_ID")
+
+# Eliminando as variáveis IDs
+
+ids <- c("Cliente_ID", "Agencia_ID", "Producto_ID")
+dados[,ids] <- NULL
+
+# Convertendo variáveis categóricas
+
+source("toFactor.R")
+categorical <- c("Semana","Canal_ID","Ruta_SAK", "NombreCliente",
+                 "NombreProducto", "Town", "State")
+dados <- to.factors(df = dados, variables = categorical)
+str(dados)
+
+# Etapa 3: Análise Exploratória dos Dados
+
+Semana_Vendas <- aggregate(Venta_hoy ~ Semana, dados, sum)
+Semana_Vendas$Semana <- as.numeric(as.character(Semana_Vendas$Semana))
+
+# Plotando a quantidade de vendas por semana em todas as unidades
+
+Semana_Vendas %>% ggplot(aes(x=Semana,y=Venta_hoy)) +
+  xlab('Semana') + ylab('Lucro em Pesos Mexicanos') + geom_line(aes(group=1), size=1,colour="#000099")+geom_point(size=3, colour = "#006400") +
+  ggtitle('Lucro Total por Semana') + scale_x_continuous(breaks = seq(3,9,1)) +
+  scale_y_continuous(labels = unit_format(unit = "M", scale = 1e-6))
+
+State_Vendas <- dados %>% group_by(State, Semana) %>%
+  summarise(Profit = sum(Venta_hoy))
+
+# Plotando os resultados semanais nas regiões mais lucrativas
+
+State_Vendas %>% filter(Profit >= 6500000) %>% ggplot(aes(x=Semana,y=Profit,group=State,color=State)) +
+  xlab('Semana') + ylab('Lucro em Pesos Mexicanos') + geom_line() + ggtitle('Lucro nos Estados Mais Lucrativos') +
+  geom_point() + scale_y_continuous(labels = unit_format(unit = "M", scale = 1e-6))
+
+# Plotando os resultados semanais nas regiões menos lucrativas
+
+State_Vendas %>% filter(Profit <= 2000000) %>% ggplot(aes(x=Semana,y=Profit,group=State,color=State)) +
+  xlab('Semana') + ylab('Lucro em Pesos Mexicanos') + geom_line() + ggtitle('Lucro nos Estados Menos Lucrativos') +
+  geom_point() + scale_y_continuous(labels = unit_format(unit = "M", scale = 1e-6))
+
+Produto_Vendas <- dados %>% group_by(NombreProducto, Semana) %>%
+  summarise(Units = sum(Venta_uni_hoy))
+
+Mais_Vendidos <- c("Nito 1p 62g Central BIM 2425","Rebanada 2p 55g BIM 1284",
+                   "Nito 1p 62g BIM 1278")
+
+# Plotando desempenho de Produtos mais Vendidos
+Produto_Vendas %>% filter(NombreProducto %in% Mais_Vendidos) %>%
+  ggplot(aes(x=Semana,y=Units)) +
+  xlab('Produtos') + ylab('Unidades Vendidas') +
+  geom_bar(aes(fill=NombreProducto),stat = 'identity', colour="black",position=position_dodge()) +
+  ggtitle('Desempenho dos Produtos Mais Vendidos') +
+  scale_y_continuous(labels = unit_format(unit = "k", scale = 1e-3))
+
+Menos_Vendidos <- subset(Produto_Vendas$NombreProducto, Produto_Vendas$Units==0)
+Menos_Vendidos <- unique(Menos_Vendidos)
+Menos_Vendidos <- as.character(Menos_Vendidos)
+
+# Lista de Produtos que não venderam por ao menos uma semana
+Menos_Vendidos
+lapply(Menos_Vendidos, write, "Lista_Menos_Vendidos.txt", append=TRUE)
+
+Cliente_Vendas <- aggregate(Venta_hoy ~ NombreCliente, dados, sum)
+
+Cliente_Vendas %>% filter(Venta_hoy >= 1500000) %>%
+  ggplot(aes(x=NombreCliente, y=Venta_hoy)) +
+  xlab('Cliente') + ylab('Lucro em Pesos Mexicanos') + geom_bar(stat="identity", fill="#FF9999", colour="black") +
+ ggtitle('Lucro obtido pelos Clientes Principais')  +
+  scale_y_continuous(labels = unit_format(unit = "M", scale = 1e-6))
+
+# Como pode ser observado acima, a maioria dos clientes não possuem cadastro na empresa
+
+# Etapa 4: Construindo Modelos Preditivos
+
+# Criando Datasets de treino e teste
+
+library(caret)
+sample2 <- sample(1:nrow(dados), 350000)
+sample3 <- sample(350001:nrow(dados), 150000)
+treino <- dados[sample2,]
+teste <- dados[sample3,]
+
+# Criando o Modelo
+
+modelo_v1 <- train(Demanda_uni_equil ~ Venta_hoy + Venta_uni_hoy, data = treino, method = 'lm')
+summary(modelo_v1)
+varImp(modelo_v1)
+
+# Realizando a previsão
+
+previsao <- predict(modelo_v1, teste)
+previsao <- round(previsao)
+
+# Plot da linha de regressão
+teste %>% ggplot(aes(x=Demanda_uni_equil, y=previsao)) +
+  geom_point()+xlab('Demanda Real')+ylab('Demanda Prevista') +
+  geom_smooth(method=lm)+ggtitle('Modelo de Regressão Linear')
+
+# Precisão do modelo
+mean(previsao==teste$Demanda_uni_equil)
+
